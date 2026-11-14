@@ -20,9 +20,9 @@ from PIL import Image, ImageOps
 APP_NAME = "SkinScan"
 TAGLINE = "Phân tích da · Gợi ý sản phẩm có bán tại Guardian"
 CONTACT = {
-    "name": "Tên của bạn / tên nhóm",
-    "school": "Trường / tổ chức",
-    "email": "email@example.com",
+    "name": "4 PINK HAT HACKERS",
+    "school": "TỔ CHỨC PINK HAT HACKER",
+    "email": "pinkhathacker@example.com",
     "phone": "09xx xxx xxx",
     "facebook": "https://facebook.com/",
     "address": "TP. Hồ Chí Minh, Việt Nam",
