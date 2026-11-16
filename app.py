@@ -28,7 +28,7 @@ CONTACT = {
     "address": "TP. Hồ Chí Minh, Việt Nam",
 }
 DATA_DATE = "11/2026"      # thời điểm lấy dữ liệu sản phẩm
-FONT_NAME = "Plus Jakarta Sans"      # tên font trên Google Fonts, vd "Roboto", "Open Sans", "Montserrat"
+FONT_NAME = "Plus Jakarta Sans"   # gần giống Gilroy (font của Guardian), có hỗ trợ tiếng Việt
 
 # Màu lấy từ trang Guardian
 ORANGE = "#F6831F"
@@ -39,7 +39,8 @@ LINE = "#E6E6E6"
 BG = "#FAFAFA"
 
 IMG_SIZE = 224
-THRESHOLD = 0.20
+THRESHOLD = 0.30     # vấn đề da phải từ 30% trở lên mới tính là "có"
+UNSURE = 0.40        # nếu lớp cao nhất dưới 40% thì báo kết quả chưa chắc chắn
 TOP_N = 8
 MAX_PER_TYPE = 2
 
@@ -57,7 +58,9 @@ VI_NAMES = {
     "dark spots": "Đốm thâm",
     "wrinkles": "Nếp nhăn",
     "redness": "Da ửng đỏ",
+    "normal": "Da bình thường",
 }
+CONCERN_NAMES = [v for k, v in VI_NAMES.items() if k != "normal"]   # 8 vấn đề da (không tính da bình thường)
 VI_TO_KEY = {v: k for k, v in VI_NAMES.items()}
 
 KEYWORDS = {
@@ -81,6 +84,7 @@ KEYWORDS = {
 }
 
 ADVICE = {
+    "normal": "Da đang ở trạng thái tốt. Chỉ cần duy trì routine cơ bản: làm sạch dịu nhẹ, dưỡng ẩm và chống nắng mỗi ngày.",
     "inflammatory acne": "Ưu tiên BHA (salicylic acid) hoặc benzoyl peroxide, rửa mặt dịu nhẹ 2 lần/ngày. Mụn viêm nặng, đau nhức nên đi khám bác sĩ da liễu.",
     "non inflammatory acne black heads": "BHA giúp làm sạch sâu lỗ chân lông; có thể dùng mặt nạ đất sét 1–2 lần/tuần. Không nặn mụn bằng tay.",
     "non inflammatory acne white heads": "Tẩy tế bào chết hóa học (AHA/BHA) 2–3 lần/tuần giúp thông thoáng lỗ chân lông.",
@@ -239,6 +243,7 @@ p, label, span, div {{ color: inherit; }}
 .bar {{ height:8px; background:#F0F0F0; border-radius:2px; overflow:hidden; }}
 .bar > div {{ height:100%; background:#CFCFCF; }}
 .bar.hot > div {{ background:{ORANGE}; }}
+.bar.ok > div {{ background:#4CAF50; }}
 .advice {{ border-left:3px solid {ORANGE}; background:#FFF7EF; padding:.65rem .9rem; margin:.55rem 0; font-size:.88rem; border-radius:0 4px 4px 0; }}
 .advice b {{ color:{ORANGE_DARK}; }}
 
@@ -385,17 +390,31 @@ def load_products():
 
 
 def predict(model, class_names, img):
-    img = ImageOps.exif_transpose(img).convert("RGB").resize((IMG_SIZE, IMG_SIZE))
+    # Cắt ảnh vuông ở giữa (giống lúc train) thay vì bóp méo ảnh
+    img = ImageOps.fit(ImageOps.exif_transpose(img).convert("RGB"), (IMG_SIZE, IMG_SIZE))
     arr = np.expand_dims(np.asarray(img, dtype=np.float32), 0)
     probs = model.predict(arr, verbose=0)[0]
     return {c: float(p) for c, p in zip(class_names, probs)}
 
 
+BASIC_KEYWORDS = ["dưỡng ẩm", "cấp ẩm", "dịu nhẹ", "dịu", "ceramide", "hyaluronic", "chống nắng", "spf",
+                  "moist", "hydrat", "gentle"]
+
+
+def concerns_found(probs):
+    """Các vấn đề da đủ ngưỡng (không tính 'normal')."""
+    return {c: p for c, p in probs.items() if c.lower() != "normal" and p >= THRESHOLD}
+
+
 def recommend(df, probs):
-    active = {c: p for c, p in probs.items() if p >= THRESHOLD}
+    active = concerns_found(probs)
     if not active:
-        top = max(probs, key=probs.get)
-        active = {top: probs[top]}
+        # Da bình thường: gợi ý bộ cơ bản (rửa mặt, dưỡng ẩm, chống nắng)
+        basic = df[df["type"].isin(["Sữa rửa mặt", "Kem dưỡng", "Chống nắng"])].copy()
+        basic["_score"] = basic["_text"].map(lambda t: sum(k in t for k in BASIC_KEYWORDS))
+        basic["_why"] = "Chăm sóc cơ bản"
+        basic = basic.sort_values(["_score", "_discount"], ascending=False)
+        return basic.groupby("type", sort=False).head(2).head(6), {}
     scores, reasons = [], []
     for text in df["_text"]:
         score, why = 0.0, []
@@ -423,7 +442,7 @@ def page_analyze():
       <p>Chụp ảnh cận mặt để nhận diện các vấn đề da thường gặp và nhận gợi ý sản phẩm phù hợp đang bán tại Guardian.</p>
       <div class="steps">
         <div class="step"><div class="num">1</div><div><b>Chụp ảnh</b>Cận mặt, đủ sáng, không dùng filter</div></div>
-        <div class="step"><div class="num">2</div><div><b>Phân tích</b>Nhận diện 8 vấn đề da phổ biến</div></div>
+        <div class="step"><div class="num">2</div><div><b>Phân tích</b>Nhận diện 8 vấn đề da phổ biến hoặc da bình thường</div></div>
         <div class="step"><div class="num">3</div><div><b>Gợi ý</b>Sản phẩm và routine theo thành phần</div></div>
       </div>
     </div>""")
@@ -456,17 +475,27 @@ def page_analyze():
 
         rows = []
         for c, p in sorted(probs.items(), key=lambda t: -t[1]):
-            hot = " hot" if p >= THRESHOLD else ""
+            if c.lower() == "normal":
+                hot = " ok"
+            else:
+                hot = " hot" if p >= THRESHOLD else ""
             rows.append(
                 f'<div class="bar-row"><div class="bar-label"><span>{esc(VI_NAMES.get(c.lower(), c))}</span>'
                 f'<span>{p:.0%}</span></div><div class="bar{hot}"><div style="width:{p*100:.1f}%"></div></div></div>')
-        html_block(f'<div class="panel"><h3>{icon("scan")}Kết quả phân tích</h3>' + "".join(rows) + "</div>")
+        unsure = ""
+        if max(probs.values()) < UNSURE:
+            unsure = ('<div class="advice">Kết quả chưa thật chắc chắn. Thử chụp lại gần hơn, ở nơi có ánh sáng '
+                      'tự nhiên, không dùng filter hay trang điểm.</div>')
+        html_block(f'<div class="panel"><h3>{icon("scan")}Kết quả phân tích</h3>' + "".join(rows) + unsure + "</div>")
 
         products = load_products()
         recs, active = recommend(products, probs)
-        tips = "".join(
-            f'<div class="advice"><b>{esc(VI_NAMES.get(c.lower(), c))}:</b> {esc(ADVICE.get(c.lower(), ""))}</div>'
-            for c in active)
+        if active:
+            tips = "".join(
+                f'<div class="advice"><b>{esc(VI_NAMES.get(c.lower(), c))}:</b> {esc(ADVICE.get(c.lower(), ""))}</div>'
+                for c in active)
+        else:
+            tips = f'<div class="advice"><b>Không phát hiện vấn đề rõ rệt.</b> {esc(ADVICE["normal"])}</div>'
         html_block(f'<div class="panel"><h3>{icon("info")}Lời khuyên chăm sóc</h3>' + tips + "</div>")
 
         active_vi = [VI_NAMES.get(c.lower(), c) for c in active]
@@ -481,7 +510,7 @@ def page_analyze():
     else:
         product_grid(recs, show_why=True)
     st.write("")
-    if st.button(f"Xem tất cả sản phẩm cho {active_vi[0]}"):
+    if active_vi and st.button(f"Xem tất cả sản phẩm cho {active_vi[0]}"):
         st.session_state["f_concern"] = [active_vi[0]]
         st.switch_page(PAGE_PRODUCTS)
     footer()
@@ -542,7 +571,7 @@ def page_routine():
     with left:
         with st.container(border=True):
             skin = st.radio("Loại da", list(SKIN_TYPES), horizontal=True)
-            concerns = st.multiselect("Vấn đề da cần cải thiện", list(VI_NAMES.values()), key="r_concerns",
+            concerns = st.multiselect("Vấn đề da cần cải thiện", CONCERN_NAMES, key="r_concerns",
                                       placeholder="Chọn một hoặc nhiều vấn đề")
             budget_label = st.selectbox("Ngân sách cho cả bộ", list(BUDGETS), index=1)
             level = st.radio("Mức độ", ["Cơ bản", "Đầy đủ"], horizontal=True,
@@ -621,7 +650,7 @@ def page_products():
         c1, c2, c3 = st.columns([3, 2, 2])
         q = c1.text_input("Tìm kiếm", placeholder="Tên sản phẩm, thương hiệu, thành phần...")
         types = c2.multiselect("Loại sản phẩm", sorted(t for t in df["type"].unique() if t), placeholder="Tất cả")
-        concerns = c3.multiselect("Vấn đề da", list(VI_NAMES.values()), key="f_concern", placeholder="Tất cả")
+        concerns = c3.multiselect("Vấn đề da", CONCERN_NAMES, key="f_concern", placeholder="Tất cả")
         c4, c5, c6 = st.columns([3, 2, 2])
         lo, hi = int(df["_price"].min()), int(df["_price"].max())
         price = c4.slider("Khoảng giá (đ)", lo, hi, (lo, hi), step=10000, format="%d")
